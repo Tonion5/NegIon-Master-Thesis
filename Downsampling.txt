@@ -1,0 +1,121 @@
+% Clearing environment and figures, adding path
+clear; clc; close all;
+addpath('C:\Users\YourUser\Documents\YourDirectory\Subfolder');
+
+% Define the base file name
+baseFileName = 'ElectrometerNeg_007';  % Change this for different datasets
+% File names derived from the base name
+dataFileName = [baseFileName, 'downsample.dat'];
+lvmFileName = [baseFileName, '.lvm'];
+
+% Create an empty file if it doesn't exist
+if ~isfile(dataFileName)
+    fileID = fopen(dataFileName, 'w');
+    fclose(fileID);
+end
+
+% File names and pre-allocation
+fileNames = {lvmFileName, dataFileName};
+numFiles = numel(fileNames); % Use numel instead of length for efficiency
+dataCell = cell(1, numFiles); % Preallocate cell array for data
+
+% Data reading loop
+for i = 1:numFiles
+    dataCell{i} = readmatrix(fileNames{i}, 'FileType', 'text');
+end
+
+% Data manipulation
+reversed_col3 = flipud(dataCell{1}(:, 3)); % Reverse the third column
+index_last_acceptable = find(~isnan(reversed_col3) & ~isinf(reversed_col3), 1);
+if isempty(index_last_acceptable)
+    error('No acceptable values found in column 3.');
+end
+last_acceptable_value = reversed_col3(index_last_acceptable);
+a = ceil(last_acceptable_value); % Ceiling operation
+b = size(dataCell{1}, 1); % Directly obtaining the number of rows
+
+% Generation of U and I based on linspace and direct assignment
+U = linspace(0, a, b)';
+I = dataCell{1}(:, 2);
+
+% Smoothing using cubic smoothing splines
+p = 1e-8; % More readable representation of the smoothing parameter
+pp = csaps(U, I, p); % Use of cubic smoothing spline
+I_new = ppval(pp, U); % Evaluate the smoothing spline
+
+% Downsampling data
+rows = size(U, 1); % Rows from U for consistency
+factor = ceil(rows / 100); % Downsampling factor to get 100 points
+data_reduced = downsample([U, I_new], factor); % Combine downsampling steps
+
+% Writing downsampled data to file
+dlmwrite(dataFileName, data_reduced, 'delimiter', '\\t');
+
+% Further data processing for plotting
+Un = dataCell{2}(:, 1);
+In = dataCell{2}(:, 2);
+
+% Data chunking for averaged plot
+factor2 = 20; % Consider defining this at the top with other parameters
+numChunks = floor(length(I) / factor2);
+U2 = linspace(0, a, numChunks)';
+I2 = arrayfun(@(k) mean(I((k - 1) * factor2 + (1:factor2))), 1:numChunks)'; % Use arrayfun for compactness
+
+% Plotting enhancements
+figure; 
+set(gcf, 'Position', [300, 100, 777, 555]); % Set figure size
+
+% Increase the size of scatter points and plot lines
+scatterSize = 20; % Larger scatter size for better visibility
+scatter(U2, I2, scatterSize, 'MarkerFaceColor', 'b', 'MarkerEdgeColor', 'b'); % Enlarged scatter points
+hold on;
+plot(U, I_new, 'r', 'LineWidth', 7); % Make smoothing spline thicker
+plot(Un, In, 'k', 'LineWidth', 3); % Make downsampling line slightly thinner than spline
+hold off;
+
+% Enlarge axis and legend fonts
+ax = gca; % Current axes
+ax.FontSize = 14; % Increase font size for axis ticks
+xlabel('Diferencia de potencial entre cilindros (V)', 'FontSize', 16); % Increase font size for x-axis label
+ylabel('Corriente (nA)', 'FontSize', 16); % Increase font size for y-axis label
+title('-5kV 3 m/s 51% 22\textdegree C E007', 'FontSize', 16); % Increase font size for title
+
+% Adjust legend
+lgd = legend({'data', 'Smoothing Spline', 'Downsampling'}, 'Location', 'southeast');
+lgd.FontSize = 14; % Increase legend font size
+
+% Adjust tick marks
+last_data_point = a;
+rounded_last_point = ceil(last_data_point / 200) * 200;
+ax.XTick = 0:200:rounded_last_point; % Set X-ticks
+ax.YTick = get(ax, 'YTick'); % Keep Y-ticks as they are
+ax.XTickLabel = num2str(-(0:200:rounded_last_point)'); % Set X-tick labels
+xlim(ax, [0, last_data_point+100]);
+
+min_I2 = min(I2); % Find the minimum value
+max_I2 = max(I2); % Find the maximum value
+% Round the minimum down and the maximum up to the nearest interval
+interval = 5; % For example, round to the nearest 10 units
+rounded_min = floor(min_I2 / interval) * interval;
+rounded_max = ceil(max_I2 / interval) * interval;
+ax.YTickLabel = num2str(-(rounded_min:5:rounded_max)'); % Set Y-tick labels
+ylim(ax, [rounded_min, rounded_max - 0]);
+
+% Adjust figure margins
+ti = ax.TightInset;
+set(ax, 'Position', [ti(1), ti(2), 1 - ti(3) - ti(1), 1 - ti(4) - ti(2) - 0.01]);
+
+% Ensure the figure window is updated before saving
+drawnow; 
+
+% Saving the figure with the base file name
+fig = gcf; % Get the current figure reference again if there was any issue
+file_name = [baseFileName, 'Fit'];
+print(fig, file_name, '-dpng', '-r300'); % Save the current figure as a PNG file
+
+% Access coefficients of spline for further use
+coefs = pp.coefs;
+
+% Display mumax and mumin
+fprintf('Ymin = %f\\n', rounded_min);
+fprintf('Ymax = %f\\n', rounded_max);

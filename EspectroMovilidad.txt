@@ -1,0 +1,177 @@
+%% Clear Workspace and Figures
+clear variables; % Clears all variables from the workspace
+close all; % Closes all open figures
+clc; % Clears the command window
+
+%% Constants Initialization
+% These constants are used throughout the calculations
+innerRadius = 0.009; % Inner radius of the cylinder in meters
+outerRadius = 0.052; % Outer radius of the cylinder in meters
+lengthCylinder = 0.33; % Length of the cylinder in meters
+airVelocity = 3; % Air velocity in meters per second
+electronCharge = 1.609e-19; % Charge of an electron in Coulombs
+viscosity = 1.81e-5; % Air viscosity in Pascal-seconds
+m_to_cm = 1e4; % Conversion factor from meters squared to centimeters squared
+
+%% File Paths and Names
+% Specify the paths and names of the files containing the data to be analyzed
+excelFileName = 'GedienDataBase.xlsx'; % Excel file name for output
+excelSheetName = 'NegIon'; % Specific sheet name in the Excel file for output
+dataFileName = 'ElectrometerNeg_007downsample.dat'; % Data file name for input
+dataFilePath = fullfile('C:\Users\YourUser\Documents\YourDirectory\Subfolder\', dataFileName); % Full path to the data file
+
+%% Data Loading
+% Load the experimental data from the specified file
+data = importdata(dataFilePath); % Load data
+voltage = data(:, 1); % Extract voltage data (V)
+current = data(:, 2); % Extract current data (A)
+
+%% Calculations
+% Calculation of mobility based on air velocity, cylinder dimensions, and voltage
+mobility = m_to_cm * (airVelocity * (outerRadius^2 - innerRadius^2) * log(outerRadius/innerRadius) ./ (2 * lengthCylinder * voltage));
+% Differences in current and voltage for subsequent calculations
+currentDiff = diff(1e-9*current); % Convert current to Amperes and calculate differences
+voltageDiff = diff(voltage); % Calculate differences in voltage
+
+%% Curve Fitting and Derivatives
+% Fit a polynomial to the current-voltage data and calculate derivatives
+p = polyfit(voltage, current, 3); % Fit a 3rd degree polynomial to the I-V data
+p_first_derivative = polyder(p); % First derivative of the polynomial
+p_second_derivative = polyder(p_first_derivative); % Second derivative of the polynomial
+first_derivative = polyval(p_first_derivative, voltage); % Evaluate the first derivative at each voltage point
+second_derivative = polyval(p_second_derivative, voltage); % Evaluate the second derivative at each voltage point
+% Plot first and second derivatives
+figure;
+subplot(2, 1, 1);
+plot(voltage, first_derivative);
+title('First Derivative');
+grid on;
+subplot(2, 1, 2);
+plot(voltage, second_derivative);
+title('Second Derivative');
+grid on;
+
+%% Find mumax and mumin based on derivative criteria
+indexMaxMobility = find(second_derivative < 0, 1, 'first');
+indexMinMobility = find(first_derivative < 0, 1, 'first');
+if isempty(indexMaxMobility) || isempty(indexMinMobility)
+    fprintf('Conditions for mumax and mumin not met within data range.\\n');
+    return;
+end
+minVoltage = voltage(indexMaxMobility);
+maxVoltage = voltage(indexMinMobility);
+
+%% Ion Density Calculation
+% Calculate ion density between the determined maximum and minimum mobility indices
+ionDensity = zeros(length(voltage), 1);
+for idx = indexMaxMobility:indexMinMobility
+    if idx == indexMinMobility
+        ionDensity(idx) = (voltage(idx) / (electronCharge * airVelocity * pi * (outerRadius^2 - innerRadius^2))) * (currentDiff(idx-1) / voltageDiff(idx-1));
+    else
+        ionDensity(idx) = (voltage(idx) / (electronCharge * airVelocity * pi * (outerRadius^2 - innerRadius^2))) * (currentDiff(idx-1) / voltageDiff(idx-1) - currentDiff(idx) / voltageDiff(idx));
+    end
+end
+
+%% Mean Mobility and Voltage Calculations
+% Calculate mean mobility, weighted mean mobility, mean voltage, and mean radius
+meanMobility = mean(mobility(indexMaxMobility:indexMinMobility));
+weightedMeanMobility = dot(ionDensity(indexMaxMobility:indexMinMobility), mobility(indexMaxMobility:indexMinMobility)) / sum(ionDensity(indexMaxMobility:indexMinMobility));
+meanVoltage = m_to_cm * (airVelocity * (outerRadius^2 - innerRadius^2) * log(outerRadius/innerRadius) / (2 * lengthCylinder * weightedMeanMobility));
+
+%% Bin Calculation for Mobility Spectrum
+% Define bins and calculate sums for ion density in each bin
+numBins = 7;
+minMobility = min(mobility(indexMaxMobility:indexMinMobility));
+maxMobility = max(mobility(indexMaxMobility:indexMinMobility));
+binEdges = linspace(minMobility, maxMobility, numBins + 1);
+binSums = zeros(1, numBins);
+for i = 1:numBins
+    binRange = mobility >= binEdges(i) & mobility < binEdges(i + 1);
+    binSums(i) = sum(ionDensity(binRange));
+end
+maxBinSum = max(binSums); % Find the maximum bin sum
+sumBinSums = sum(binSums); % Calculate the total sum of bin sums
+meanBinSums = mean(binSums); % Calculate the mean of bin sums
+
+%% Extract Plot Title Number from Data File Name
+% Extract a number from the data file name for use in plotting titles
+extractedNumber = regexp(dataFileName, '_(\d+)downsample', 'tokens');
+if ~isempty(extractedNumber)
+    numberStr = extractedNumber{1}{1};  % This extracts the number as a string
+    plotTitleNumber = ['E', numberStr]; % Prepend 'N' to the number for the plot title
+else
+    plotTitleNumber = 'E'; % Default value if the pattern is not found
+end
+
+%% Plotting and saving graph
+% Create plots for visualization of results
+plotVoltageCurrent(voltage, current); % Plot of current vs. voltage
+plotIonMobilityBar(mobility, binEdges, binSums, minMobility, maxMobility, plotTitleNumber); % Absolute values of ion mobility spectrum
+set(gcf, 'Position', [400, 200, 777, 555]); % Set figure position and size
+% Adjust figure layout to accommodate axes before saving
+adjustFigureLayout(gca, 0.01, 0.01); % additional_space_top, additional_space_right
+[~, name, ~] = fileparts(dataFileName); % Separate the file name from its extension
+imageFileName = ['Mov', name, '.png']; % Create a new file name for the image
+saveas(gcf, imageFileName); % Save figure
+
+%% Writing Results to Excel
+% Check for existing data matching plotTitleNumber and update accordingly
+raw = readcell(excelFileName, 'Sheet', excelSheetName); % Read the sheet
+existingTitles = raw(:,1); % Extract existing titles
+rowIndex = find(strcmp(existingTitles, plotTitleNumber)); % Find row index for current data
+if isempty(rowIndex)
+    disp('plotTitleNumber not found in Excel file.');
+    return;
+else
+    dataToWrite = [weightedMeanMobility, meanVoltage, maxBinSum, sumBinSums, meanBinSums];
+    for i = 1:length(dataToWrite)
+        writecell({dataToWrite(i)}, excelFileName, 'Sheet', excelSheetName, 'Range', [char(65+i) num2str(rowIndex)]);
+    end
+    
+    % Now, write the mobility values for indexMaxMobility and indexMinMobility
+    % Assuming the next columns after the last entry in dataToWrite are G and H
+    writecell({mobility(indexMinMobility)}, excelFileName, 'Sheet', excelSheetName, 'Range', ['G' num2str(rowIndex)]);
+    writecell({mobility(indexMaxMobility)}, excelFileName, 'Sheet', excelSheetName, 'Range', ['H' num2str(rowIndex)]);
+end
+
+%% Display Results in Command Window
+% Output key results to the command window for quick reference
+fprintf('Maximum Mobility = %f\n', mobility(indexMaxMobility));
+fprintf('Minimum Mobility = %f\n', mobility(indexMinMobility));
+fprintf('Mean Mobility = %f\n', meanMobility);
+fprintf('Weighted Mean Mobility = %f\n', weightedMeanMobility);
+fprintf('Mean Voltage = %f\n', meanVoltage);
+fprintf('Mean Radius = %f\n', meanRadius);
+fprintf('Min Voltage = %f\n', minVoltage);
+fprintf('Max Voltage = %f\n', maxVoltage);
+
+%% Functions Definition Section
+% Define all functions used for plotting at the end for better organization
+
+function plotVoltageCurrent(voltage, current)
+    % Function to plot voltage against current
+    figure;
+    plot(voltage, current, '-o');
+    xlabel('Voltage (V)');
+    ylabel('Current (nA)');
+    title('I-V Characteristics');
+    grid on;
+end
+
+function plotIonMobilityBar(~, binEdges, BinSums, minMobility, maxMobility, plotTitleNumber)
+    figure;
+    bar(binEdges(1:end-1), BinSums, 'histc');
+    set(gca, 'FontSize', 14); %set(gca, 'XScale', 'log'); % Set x-axis to logarithmic scale
+    xlim(gca, [floor(minMobility*50)/50 - 0.02,ceil(maxMobility*20)/20 + 0]);
+    xlabel('Movilidad de iones (cm$^2$ V$^{-1}$ s$^{-1}$)', 'FontSize', 17, 'Interpreter', 'latex');
+    ylabel('Densidad de iones (m$^{-3}$)', 'FontSize', 17, 'Interpreter', 'latex');
+    title(['Espectro de Movilidad I\'onica archivo ', plotTitleNumber], 'FontSize', 16, 'FontWeight', 'bold');
+    grid on;
+end
+
+function adjustFigureLayout(ax, additionalSpaceTop, additionalSpaceRight)
+    % Adjust figure layout to optimize space usage
+    drawnow; % Ensure the figure is fully rendered
+    ti = get(ax, 'TightInset'); % Get the tight inset values
+    set(ax, 'Position', [ti(1) + 0.005, ti(2) + 0.005, 1 - ti(3) - ti(1) - additionalSpaceRight, 1 - ti(4) - ti(2) - additionalSpaceTop]);
+end
